@@ -302,12 +302,13 @@ pub fn get_transactions_impl(network: String, tx_hashes: Vec<String>) -> Result<
     let mut results = Vec::new();
 
     for tx_hash in tx_hashes {
+        // Get raw transaction hex (verbose=false)
         let result = connection
-            .send_request("blockchain.transaction.get", json!([tx_hash, true]))?;
+            .send_request("blockchain.transaction.get", json!([tx_hash, false]))?;
 
         results.push(json!({
             "tx_hash": tx_hash,
-            "result": result
+            "hex": result
         }));
     }
 
