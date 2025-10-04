@@ -247,6 +247,109 @@ pub fn get_balance_impl(network: String, script_hashes: Vec<String>) -> Result<E
     ))
 }
 
+pub fn subscribe_header_impl(network: String) -> Result<ElectrumResponse, String> {
+    let mut connections = CONNECTIONS
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    let connection = connections
+        .get_mut(&network)
+        .ok_or("Not connected".to_string())?;
+
+    let result = connection
+        .send_request("blockchain.headers.subscribe", json!([]))?;
+
+    Ok(ElectrumResponse::success(
+        serde_json::to_string(&result).unwrap_or_default(),
+    ))
+}
+
+pub fn get_address_script_hashes_history_impl(network: String, script_hashes: Vec<String>) -> Result<ElectrumResponse, String> {
+    let mut connections = CONNECTIONS
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    let connection = connections
+        .get_mut(&network)
+        .ok_or("Not connected".to_string())?;
+
+    let mut results = Vec::new();
+
+    for script_hash in script_hashes {
+        let result = connection
+            .send_request("blockchain.scripthash.get_history", json!([script_hash]))?;
+
+        results.push(json!({
+            "scriptHash": script_hash,
+            "result": result
+        }));
+    }
+
+    Ok(ElectrumResponse::success(
+        serde_json::to_string(&results).unwrap_or_default(),
+    ))
+}
+
+pub fn get_transactions_impl(network: String, tx_hashes: Vec<String>) -> Result<ElectrumResponse, String> {
+    let mut connections = CONNECTIONS
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    let connection = connections
+        .get_mut(&network)
+        .ok_or("Not connected".to_string())?;
+
+    let mut results = Vec::new();
+
+    for tx_hash in tx_hashes {
+        let result = connection
+            .send_request("blockchain.transaction.get", json!([tx_hash, true]))?;
+
+        results.push(json!({
+            "tx_hash": tx_hash,
+            "result": result
+        }));
+    }
+
+    Ok(ElectrumResponse::success(
+        serde_json::to_string(&results).unwrap_or_default(),
+    ))
+}
+
+pub fn get_transaction_merkle_impl(network: String, tx_hash: String, height: u32) -> Result<ElectrumResponse, String> {
+    let mut connections = CONNECTIONS
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    let connection = connections
+        .get_mut(&network)
+        .ok_or("Not connected".to_string())?;
+
+    let result = connection
+        .send_request("blockchain.transaction.get_merkle", json!([tx_hash, height]))?;
+
+    Ok(ElectrumResponse::success(
+        serde_json::to_string(&result).unwrap_or_default(),
+    ))
+}
+
+pub fn broadcast_transaction_impl(network: String, raw_tx: String) -> Result<ElectrumResponse, String> {
+    let mut connections = CONNECTIONS
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    let connection = connections
+        .get_mut(&network)
+        .ok_or("Not connected".to_string())?;
+
+    let result = connection
+        .send_request("blockchain.transaction.broadcast", json!([raw_tx]))?;
+
+    Ok(ElectrumResponse::success(
+        serde_json::to_string(&result).unwrap_or_default(),
+    ))
+}
+
 fn connect_tls(host: &str, port: u16) -> Result<ElectrumConnection, String> {
     // Create TLS config with webpki root certificates
     let mut root_store = rustls::RootCertStore::empty();
@@ -381,6 +484,106 @@ pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeGetBalanc
     env.new_string(result).unwrap().into_raw()
 }
 
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeSubscribeHeader(
+    mut env: JNIEnv,
+    _: JClass,
+    network: JString,
+) -> jstring {
+    let network_str: String = env.get_string(&network).unwrap().into();
+
+    let result = match subscribe_header_impl(network_str) {
+        Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+        Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    env.new_string(result).unwrap().into_raw()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeGetAddressScriptHashesHistory(
+    mut env: JNIEnv,
+    _: JClass,
+    network: JString,
+    script_hashes_json: JString,
+) -> jstring {
+    let network_str: String = env.get_string(&network).unwrap().into();
+    let hashes_str: String = env.get_string(&script_hashes_json).unwrap().into();
+
+    let result = match serde_json::from_str::<Vec<String>>(&hashes_str) {
+        Ok(hashes) => match get_address_script_hashes_history_impl(network_str, hashes) {
+            Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+            Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+        },
+        Err(_) => serde_json::to_string(&ElectrumResponse::error_response("Invalid script hashes".to_string())).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    env.new_string(result).unwrap().into_raw()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeGetTransactions(
+    mut env: JNIEnv,
+    _: JClass,
+    network: JString,
+    tx_hashes_json: JString,
+) -> jstring {
+    let network_str: String = env.get_string(&network).unwrap().into();
+    let hashes_str: String = env.get_string(&tx_hashes_json).unwrap().into();
+
+    let result = match serde_json::from_str::<Vec<String>>(&hashes_str) {
+        Ok(hashes) => match get_transactions_impl(network_str, hashes) {
+            Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+            Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+        },
+        Err(_) => serde_json::to_string(&ElectrumResponse::error_response("Invalid tx hashes".to_string())).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    env.new_string(result).unwrap().into_raw()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeGetTransactionMerkle(
+    mut env: JNIEnv,
+    _: JClass,
+    network: JString,
+    tx_hash: JString,
+    height: i32,
+) -> jstring {
+    let network_str: String = env.get_string(&network).unwrap().into();
+    let tx_hash_str: String = env.get_string(&tx_hash).unwrap().into();
+
+    let result = match get_transaction_merkle_impl(network_str, tx_hash_str, height as u32) {
+        Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+        Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    env.new_string(result).unwrap().into_raw()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeBroadcastTransaction(
+    mut env: JNIEnv,
+    _: JClass,
+    network: JString,
+    raw_tx: JString,
+) -> jstring {
+    let network_str: String = env.get_string(&network).unwrap().into();
+    let raw_tx_str: String = env.get_string(&raw_tx).unwrap().into();
+
+    let result = match broadcast_transaction_impl(network_str, raw_tx_str) {
+        Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+        Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    env.new_string(result).unwrap().into_raw()
+}
+
 // iOS C FFI bindings
 #[no_mangle]
 pub extern "C" fn electrum_start(config_json: *const c_char) -> *mut c_char {
@@ -444,6 +647,76 @@ pub extern "C" fn electrum_get_balance(network: *const c_char, script_hashes_jso
             Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
         },
         Err(_) => serde_json::to_string(&ElectrumResponse::error_response("Invalid script hashes".to_string())).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    CString::new(result).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn electrum_subscribe_header(network: *const c_char) -> *mut c_char {
+    let network_str = unsafe { CStr::from_ptr(network).to_str().unwrap() }.to_string();
+
+    let result = match subscribe_header_impl(network_str) {
+        Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+        Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    CString::new(result).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn electrum_get_address_script_hashes_history(network: *const c_char, script_hashes_json: *const c_char) -> *mut c_char {
+    let network_str = unsafe { CStr::from_ptr(network).to_str().unwrap() }.to_string();
+    let hashes_str = unsafe { CStr::from_ptr(script_hashes_json).to_str().unwrap() };
+
+    let result = match serde_json::from_str::<Vec<String>>(hashes_str) {
+        Ok(hashes) => match get_address_script_hashes_history_impl(network_str, hashes) {
+            Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+            Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+        },
+        Err(_) => serde_json::to_string(&ElectrumResponse::error_response("Invalid script hashes".to_string())).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    CString::new(result).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn electrum_get_transactions(network: *const c_char, tx_hashes_json: *const c_char) -> *mut c_char {
+    let network_str = unsafe { CStr::from_ptr(network).to_str().unwrap() }.to_string();
+    let hashes_str = unsafe { CStr::from_ptr(tx_hashes_json).to_str().unwrap() };
+
+    let result = match serde_json::from_str::<Vec<String>>(hashes_str) {
+        Ok(hashes) => match get_transactions_impl(network_str, hashes) {
+            Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+            Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+        },
+        Err(_) => serde_json::to_string(&ElectrumResponse::error_response("Invalid tx hashes".to_string())).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    CString::new(result).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn electrum_get_transaction_merkle(network: *const c_char, tx_hash: *const c_char, height: u32) -> *mut c_char {
+    let network_str = unsafe { CStr::from_ptr(network).to_str().unwrap() }.to_string();
+    let tx_hash_str = unsafe { CStr::from_ptr(tx_hash).to_str().unwrap() }.to_string();
+
+    let result = match get_transaction_merkle_impl(network_str, tx_hash_str, height) {
+        Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+        Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
+    };
+
+    CString::new(result).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn electrum_broadcast_transaction(network: *const c_char, raw_tx: *const c_char) -> *mut c_char {
+    let network_str = unsafe { CStr::from_ptr(network).to_str().unwrap() }.to_string();
+    let raw_tx_str = unsafe { CStr::from_ptr(raw_tx).to_str().unwrap() }.to_string();
+
+    let result = match broadcast_transaction_impl(network_str, raw_tx_str) {
+        Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+        Err(e) => serde_json::to_string(&ElectrumResponse::error_response(e)).unwrap_or_else(|_| "{}".to_string()),
     };
 
     CString::new(result).unwrap().into_raw()
