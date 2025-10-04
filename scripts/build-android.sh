@@ -13,13 +13,13 @@ for target in "${TARGETS[@]}"; do
     rustup target add "$target" 2>/dev/null || true
 done
 
-# Build for each target
+# Build for each target using cargo-ndk
 for i in "${!TARGETS[@]}"; do
     target="${TARGETS[$i]}"
     output_dir="${OUTPUT_DIRS[$i]}"
     
     echo "Building for $target..."
-    cargo build --release --target "$target"
+    cargo ndk --target $target --platform 21 -- build --release
     
     # Copy to jniLibs
     mkdir -p "android/src/main/jniLibs/$output_dir"
