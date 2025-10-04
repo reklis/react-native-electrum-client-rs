@@ -9,8 +9,12 @@
   "scripts": {
     "build": "npm run build:ts",
     "build:rust": "cargo build --release",
+    "build:rust:ios": "./scripts/build-ios.sh",
+    "build:rust:android": "./scripts/build-android.sh",
+    "build:rust:all": "npm run build:rust:ios && npm run build:rust:android",
     "build:ts": "tsc",
     "prepare": "npm run build:ts",
+    "prepublishOnly": "npm run build:ts && npm run build:rust:all",
     "test": "cargo test"
   },
   "keywords": [
@@ -44,6 +48,7 @@
     "lib",
     "android",
     "ios",
+    "target/universal",
     "react-native-electrum-client-rs.podspec",
     "Cargo.toml",
     "README.md",

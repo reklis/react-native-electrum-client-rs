@@ -3,6 +3,7 @@ src/
 
 # Rust development files
 target/
+!target/universal/
 bin/
 generate_bindings.sh
 
