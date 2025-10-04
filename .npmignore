@@ -1,0 +1,24 @@
+# Source files (we publish compiled lib/ instead)
+src/
+
+# Rust development files
+target/
+bin/
+generate_bindings.sh
+
+# Development
+.git/
+.gitignore
+tsconfig.json
+*.md
+!README.md
+
+# Tests
+tests/
+
+# IDE
+.idea/
+.vscode/
+
+# CI/CD
+.github/
