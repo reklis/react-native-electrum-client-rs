@@ -38,3 +38,4 @@ android/src/main/java/com/electrumclientrs/uniffi/
 ios/electrum_client_rs.swift
 ios/electrum_client_rsFFI.h
 ios/electrum_client_rsFFI.modulemap
+.envrc

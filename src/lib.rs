@@ -6,14 +6,14 @@ use std::time::Duration;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use native_tls::TlsConnector;
+use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 #[cfg(target_os = "android")]
 use jni::JNIEnv;
 #[cfg(target_os = "android")]
-use jni::objects::{JClass, JString, JObject};
+use jni::objects::{JClass, JString};
 #[cfg(target_os = "android")]
 use jni::sys::jstring;
 
@@ -59,7 +59,7 @@ impl ElectrumResponse {
 
 // Connection manager
 struct ElectrumConnection {
-    stream: BufReader<native_tls::TlsStream<TcpStream>>,
+    stream: BufReader<StreamOwned<ClientConnection, TcpStream>>,
 }
 
 impl ElectrumConnection {
@@ -248,10 +248,26 @@ pub fn get_balance_impl(network: String, script_hashes: Vec<String>) -> Result<E
 }
 
 fn connect_tls(host: &str, port: u16) -> Result<ElectrumConnection, String> {
-    let connector = TlsConnector::builder()
-        .danger_accept_invalid_certs(false)
-        .build()
-        .map_err(|e| format!("TLS builder error: {}", e))?;
+    // Create TLS config with webpki root certificates
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+        rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+            ta.subject,
+            ta.spki,
+            ta.name_constraints,
+        )
+    }));
+
+    let config = ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    let server_name = host.try_into()
+        .map_err(|e| format!("Invalid DNS name: {:?}", e))?;
+
+    let conn = ClientConnection::new(Arc::new(config), server_name)
+        .map_err(|e| format!("TLS connection setup error: {}", e))?;
 
     let tcp_stream = TcpStream::connect((host, port))
         .map_err(|e| format!("TCP connection error: {}", e))?;
@@ -264,10 +280,7 @@ fn connect_tls(host: &str, port: u16) -> Result<ElectrumConnection, String> {
         .set_write_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| format!("Set timeout error: {}", e))?;
 
-    let tls_stream = connector
-        .connect(host, tcp_stream)
-        .map_err(|e| format!("TLS connection error: {}", e))?;
-
+    let tls_stream = StreamOwned::new(conn, tcp_stream);
     let stream = BufReader::new(tls_stream);
 
     Ok(ElectrumConnection { stream })
@@ -277,11 +290,11 @@ fn connect_tls(host: &str, port: u16) -> Result<ElectrumConnection, String> {
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeStart(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _: JClass,
     config_json: JString,
 ) -> jstring {
-    let config_str: String = env.get_string(config_json).unwrap().into();
+    let config_str: String = env.get_string(&config_json).unwrap().into();
 
     let result = match serde_json::from_str::<StartConfig>(&config_str) {
         Ok(config) => match start_impl(config) {
@@ -297,11 +310,11 @@ pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeStart(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeStop(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _: JClass,
     network: JString,
 ) -> jstring {
-    let network_str: String = env.get_string(network).unwrap().into();
+    let network_str: String = env.get_string(&network).unwrap().into();
 
     let result = match stop_impl(network_str) {
         Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
@@ -314,11 +327,11 @@ pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeStop(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativePingServer(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _: JClass,
     network: JString,
 ) -> jstring {
-    let network_str: String = env.get_string(network).unwrap().into();
+    let network_str: String = env.get_string(&network).unwrap().into();
 
     let result = match ping_server_impl(network_str) {
         Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
@@ -331,12 +344,12 @@ pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativePingServe
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeGetHeader(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _: JClass,
     network: JString,
     height: i32,
 ) -> jstring {
-    let network_str: String = env.get_string(network).unwrap().into();
+    let network_str: String = env.get_string(&network).unwrap().into();
 
     let result = match get_header_impl(network_str, height as u32) {
         Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
@@ -349,13 +362,13 @@ pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeGetHeader
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_electrumclientrs_ElectrumClientModule_nativeGetBalance(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _: JClass,
     network: JString,
     script_hashes_json: JString,
 ) -> jstring {
-    let network_str: String = env.get_string(network).unwrap().into();
-    let hashes_str: String = env.get_string(script_hashes_json).unwrap().into();
+    let network_str: String = env.get_string(&network).unwrap().into();
+    let hashes_str: String = env.get_string(&script_hashes_json).unwrap().into();
 
     let result = match serde_json::from_str::<Vec<String>>(&hashes_str) {
         Ok(hashes) => match get_balance_impl(network_str, hashes) {
