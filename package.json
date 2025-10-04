@@ -7,13 +7,10 @@
   "react-native": "src/index.ts",
   "source": "src/index.ts",
   "scripts": {
-    "build": "npm run build:rust && npm run build:bindings && npm run build:ts",
+    "build": "npm run build:ts",
     "build:rust": "cargo build --release",
-    "build:bindings": "npm run uniffi:kotlin && npm run uniffi:swift",
-    "uniffi:kotlin": "cargo run --bin uniffi-bindgen -- generate src/electrum_client.udl --language kotlin --out-dir android/src/main/java",
-    "uniffi:swift": "cargo run --bin uniffi-bindgen -- generate src/electrum_client.udl --language swift --out-dir ios",
     "build:ts": "tsc",
-    "prepare": "npm run build:rust",
+    "prepare": "npm run build:ts",
     "test": "cargo test"
   },
   "keywords": [
@@ -49,8 +46,7 @@
     "ios",
     "react-native-electrum-client-rs.podspec",
     "Cargo.toml",
-    "Cargo.lock",
-    "build.rs",
-    "README.md"
+    "README.md",
+    "scripts"
   ]
 }

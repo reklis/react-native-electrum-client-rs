@@ -2,6 +2,8 @@ package com.electrumclientrs
 
 import com.facebook.react.bridge.*
 import com.facebook.react.module.annotations.ReactModule
+import org.json.JSONArray
+import org.json.JSONObject
 
 @ReactModule(name = ElectrumClientModule.NAME)
 class ElectrumClientModule(reactContext: ReactApplicationContext) :
@@ -12,35 +14,40 @@ class ElectrumClientModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun start(config: ReadableMap, promise: Promise) {
         try {
-            val network = config.getString("network") ?: "bitcoin"
-            val customPeers = config.getArray("customPeers")?.let { peersArray ->
-                val peers = mutableListOf<Peer>()
-                for (i in 0 until peersArray.size()) {
-                    val peerMap = peersArray.getMap(i)
-                    if (peerMap != null) {
-                        peers.add(
-                            Peer(
-                                host = peerMap.getString("host") ?: "",
-                                ssl = if (peerMap.hasKey("ssl")) peerMap.getInt("ssl").toUShort() else null,
-                                tcp = if (peerMap.hasKey("tcp")) peerMap.getInt("tcp").toUShort() else null,
-                                protocol = peerMap.getString("protocol")
-                            )
-                        )
+            val configJson = JSONObject().apply {
+                put("network", config.getString("network") ?: "bitcoin")
+                if (config.hasKey("customPeers")) {
+                    val peersArray = config.getArray("customPeers")
+                    val peersJsonArray = JSONArray()
+                    if (peersArray != null) {
+                        for (i in 0 until peersArray.size()) {
+                            val peer = peersArray.getMap(i)
+                            if (peer != null) {
+                                val peerJson = JSONObject().apply {
+                                    put("host", peer.getString("host") ?: "")
+                                    if (peer.hasKey("ssl")) put("ssl", peer.getInt("ssl"))
+                                    if (peer.hasKey("tcp")) put("tcp", peer.getInt("tcp"))
+                                    if (peer.hasKey("protocol")) put("protocol", peer.getString("protocol"))
+                                }
+                                peersJsonArray.put(peerJson)
+                            }
+                        }
                     }
+                    put("custom_peers", peersJsonArray)
                 }
-                peers
             }
 
-            val startConfig = StartConfig(
-                network = network,
-                customPeers = customPeers
-            )
+            val resultJson = nativeStart(configJson.toString())
+            val result = JSONObject(resultJson)
 
-            val result = uniffi.electrum_client_rs.start(startConfig)
             val response = Arguments.createMap().apply {
-                putBoolean("error", result.error)
-                putString("data", result.data)
-                putString("method", result.method)
+                putBoolean("error", result.getBoolean("error"))
+                if (result.has("data") && !result.isNull("data")) {
+                    putString("data", result.getString("data"))
+                }
+                if (result.has("method") && !result.isNull("method")) {
+                    putString("method", result.getString("method"))
+                }
             }
             promise.resolve(response)
         } catch (e: Exception) {
@@ -51,11 +58,17 @@ class ElectrumClientModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun stop(network: String, promise: Promise) {
         try {
-            val result = uniffi.electrum_client_rs.stop(network)
+            val resultJson = nativeStop(network)
+            val result = JSONObject(resultJson)
+
             val response = Arguments.createMap().apply {
-                putBoolean("error", result.error)
-                putString("data", result.data)
-                putString("method", result.method)
+                putBoolean("error", result.getBoolean("error"))
+                if (result.has("data") && !result.isNull("data")) {
+                    putString("data", result.getString("data"))
+                }
+                if (result.has("method") && !result.isNull("method")) {
+                    putString("method", result.getString("method"))
+                }
             }
             promise.resolve(response)
         } catch (e: Exception) {
@@ -66,11 +79,17 @@ class ElectrumClientModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun pingServer(network: String, promise: Promise) {
         try {
-            val result = uniffi.electrum_client_rs.pingServer(network)
+            val resultJson = nativePingServer(network)
+            val result = JSONObject(resultJson)
+
             val response = Arguments.createMap().apply {
-                putBoolean("error", result.error)
-                putString("data", result.data)
-                putString("method", result.method)
+                putBoolean("error", result.getBoolean("error"))
+                if (result.has("data") && !result.isNull("data")) {
+                    putString("data", result.getString("data"))
+                }
+                if (result.has("method") && !result.isNull("method")) {
+                    putString("method", result.getString("method"))
+                }
             }
             promise.resolve(response)
         } catch (e: Exception) {
@@ -81,11 +100,17 @@ class ElectrumClientModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun getHeader(network: String, height: Int, promise: Promise) {
         try {
-            val result = uniffi.electrum_client_rs.getHeader(network, height.toUInt())
+            val resultJson = nativeGetHeader(network, height)
+            val result = JSONObject(resultJson)
+
             val response = Arguments.createMap().apply {
-                putBoolean("error", result.error)
-                putString("data", result.data)
-                putString("method", result.method)
+                putBoolean("error", result.getBoolean("error"))
+                if (result.has("data") && !result.isNull("data")) {
+                    putString("data", result.getString("data"))
+                }
+                if (result.has("method") && !result.isNull("method")) {
+                    putString("method", result.getString("method"))
+                }
             }
             promise.resolve(response)
         } catch (e: Exception) {
@@ -96,22 +121,35 @@ class ElectrumClientModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun getBalance(network: String, scriptHashes: ReadableArray, promise: Promise) {
         try {
-            val hashes = mutableListOf<String>()
+            val hashes = JSONArray()
             for (i in 0 until scriptHashes.size()) {
-                scriptHashes.getString(i)?.let { hashes.add(it) }
+                scriptHashes.getString(i)?.let { hashes.put(it) }
             }
 
-            val result = uniffi.electrum_client_rs.getBalance(network, hashes)
+            val resultJson = nativeGetBalance(network, hashes.toString())
+            val result = JSONObject(resultJson)
+
             val response = Arguments.createMap().apply {
-                putBoolean("error", result.error)
-                putString("data", result.data)
-                putString("method", result.method)
+                putBoolean("error", result.getBoolean("error"))
+                if (result.has("data") && !result.isNull("data")) {
+                    putString("data", result.getString("data"))
+                }
+                if (result.has("method") && !result.isNull("method")) {
+                    putString("method", result.getString("method"))
+                }
             }
             promise.resolve(response)
         } catch (e: Exception) {
             promise.reject("ELECTRUM_ERROR", e.message, e)
         }
     }
+
+    // Native JNI methods
+    private external fun nativeStart(configJson: String): String
+    private external fun nativeStop(network: String): String
+    private external fun nativePingServer(network: String): String
+    private external fun nativeGetHeader(network: String, height: Int): String
+    private external fun nativeGetBalance(network: String, scriptHashesJson: String): String
 
     companion object {
         const val NAME = "ElectrumClient"
