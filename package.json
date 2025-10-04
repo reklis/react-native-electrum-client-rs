@@ -1,6 +1,6 @@
 {
   "name": "react-native-electrum-client-rs",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "High-performance Electrum client for React Native, powered by Rust",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
