@@ -130,12 +130,26 @@ fn get_default_peers(network: &str) -> Vec<Peer> {
                 protocol: Some("ssl".to_string()),
             },
         ],
-        "bitcoinTestnet" => vec![Peer {
-            host: "testnet.aranguren.org".to_string(),
-            ssl: Some(51002),
-            tcp: Some(51001),
-            protocol: Some("ssl".to_string()),
-        }],
+        "bitcoinTestnet" => vec![
+            Peer {
+                host: "testnet.qtornado.com".to_string(),
+                ssl: Some(51002),
+                tcp: Some(51001),
+                protocol: Some("ssl".to_string()),
+            },
+            Peer {
+                host: "testnet.aranguren.org".to_string(),
+                ssl: Some(51002),
+                tcp: Some(51001),
+                protocol: Some("ssl".to_string()),
+            },
+            Peer {
+                host: "electrum.blockstream.info".to_string(),
+                ssl: Some(60002),
+                tcp: Some(60001),
+                protocol: Some("ssl".to_string()),
+            },
+        ],
         _ => vec![],
     }
 }
