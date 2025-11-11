@@ -32,7 +32,7 @@ fi
 
 # Stage the version changes
 echo "Staging version changes..."
-git add package.json Cargo.toml
+git add package.json package-lock.json Cargo.toml
 
 # Commit the version bump
 echo "Committing version bump..."
