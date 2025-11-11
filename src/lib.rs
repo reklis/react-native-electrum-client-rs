@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{channel, Sender};
 
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use serde::{Deserialize, Serialize};
@@ -61,80 +62,129 @@ impl ElectrumResponse {
 // Global request ID counter
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
-// Connection manager
+// Connection manager with request/response matching
 struct ElectrumConnection {
     stream: Arc<Mutex<BufReader<StreamOwned<ClientConnection, TcpStream>>>>,
+    pending_requests: Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>,
 }
 
 impl ElectrumConnection {
     fn send_request(&self, method: &str, params: Value) -> Result<Value, String> {
-        // Lock the stream for the entire request-response cycle to prevent concurrent requests
-        let mut stream = self.stream.lock()
-            .map_err(|e| format!("Failed to lock stream: {}", e))?;
-
         // Use unique request ID
         let request_id = REQUEST_ID.fetch_add(1, Ordering::SeqCst);
 
-        let request = json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": request_id
-        });
+        // Create channel for this request
+        let (tx, rx) = channel();
 
-        let request_str = serde_json::to_string(&request)
-            .map_err(|e| format!("Serialization error: {}", e))?;
-
-        // Send request
-        stream
-            .get_mut()
-            .write_all(format!("{}\n", request_str).as_bytes())
-            .map_err(|e| format!("Write error: {}", e))?;
-
-        stream
-            .get_mut()
-            .flush()
-            .map_err(|e| format!("Flush error: {}", e))?;
-
-        // Read response
-        let mut response_str = String::new();
-        let read_result = stream.read_line(&mut response_str);
-
-        if let Err(e) = read_result {
-            return Err(format!("Read error: {}", e));
+        // Register this request
+        {
+            let mut pending = self.pending_requests.lock()
+                .map_err(|e| format!("Failed to lock pending requests: {}", e))?;
+            pending.insert(request_id, tx);
         }
 
-        // Trim whitespace and validate non-empty
+        // Send the request
+        {
+            let mut stream = self.stream.lock()
+                .map_err(|e| format!("Failed to lock stream: {}", e))?;
+
+            let request = json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+                "id": request_id
+            });
+
+            let request_str = serde_json::to_string(&request)
+                .map_err(|e| format!("Serialization error: {}", e))?;
+
+            stream
+                .get_mut()
+                .write_all(format!("{}\n", request_str).as_bytes())
+                .map_err(|e| format!("Write error: {}", e))?;
+
+            stream
+                .get_mut()
+                .flush()
+                .map_err(|e| format!("Flush error: {}", e))?;
+        }
+
+        // Try to read and dispatch responses until we get ours
+        for _ in 0..10 {  // Try up to 10 times
+            match self.try_read_response() {
+                Ok(_) => {
+                    // Check if our response is ready
+                    if let Ok(result) = rx.try_recv() {
+                        // Clean up
+                        let mut pending = self.pending_requests.lock().unwrap();
+                        pending.remove(&request_id);
+                        return result;
+                    }
+                }
+                Err(_) => {
+                    // No response available, wait a bit
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+
+        // Timeout
+        let mut pending = self.pending_requests.lock().unwrap();
+        pending.remove(&request_id);
+        Err(format!("Timeout waiting for response to request {}", request_id))
+    }
+
+    fn try_read_response(&self) -> Result<(), String> {
+        let mut stream = self.stream.lock()
+            .map_err(|e| format!("Failed to lock stream: {}", e))?;
+
+        let mut response_str = String::new();
+        match stream.read_line(&mut response_str) {
+            Ok(0) => return Err("Connection closed".to_string()),
+            Ok(_) => {},
+            Err(e) => return Err(format!("Read error: {}", e)),
+        }
+
+        // Trim and validate
         let response_str = response_str.trim();
         if response_str.is_empty() {
-            return Err("Empty response from server".to_string());
+            return Err("Empty response".to_string());
         }
 
-        // Parse JSON with better error message
+        // Parse JSON
         let response: Value = serde_json::from_str(response_str)
-            .map_err(|e| format!("Invalid JSON response: {} (raw: {})", e,
-                if response_str.len() > 100 { &response_str[..100] } else { response_str }))?;
+            .map_err(|e| format!("Invalid JSON: {}", e))?;
 
-        // Validate response ID matches request ID
-        if let Some(response_id) = response.get("id") {
-            if response_id.as_u64() != Some(request_id) {
-                return Err(format!("Response ID mismatch: expected {}, got {}", request_id, response_id));
+        // Get the request ID from response
+        let response_id = response.get("id")
+            .and_then(|id| id.as_u64())
+            .ok_or_else(|| "No ID in response".to_string())?;
+
+        // Find the pending request
+        let sender = {
+            let mut pending = self.pending_requests.lock().unwrap();
+            pending.remove(&response_id)
+        };
+
+        if let Some(sender) = sender {
+            // Check for errors
+            if let Some(error) = response.get("error") {
+                if !error.is_null() {
+                    let _ = sender.send(Err(format!("Server error: {}", error)));
+                    return Ok(());
+                }
             }
+
+            // Extract result
+            let result = response
+                .get("result")
+                .cloned()
+                .ok_or_else(|| "No result field".to_string());
+
+            let _ = sender.send(result);
         }
 
-        // Check for server errors
-        if let Some(error) = response.get("error") {
-            if !error.is_null() {
-                return Err(format!("Server error: {}", error));
-            }
-        }
-
-        // Extract and return result
-        response
-            .get("result")
-            .cloned()
-            .ok_or_else(|| format!("No result field in response (raw: {})",
-                if response_str.len() > 100 { &response_str[..100] } else { response_str }))
+        Ok(())
     }
 }
 
@@ -207,7 +257,7 @@ pub fn start_impl(config: StartConfig) -> Result<ElectrumResponse, String> {
         if protocol == "ssl" {
             if let Some(port) = peer.ssl {
                 match connect_tls(&peer.host, port) {
-                    Ok(mut stream) => {
+                    Ok(stream) => {
                         match stream.send_request("server.version", json!(["react-native-electrum-client-rs", "1.4"])) {
                             Ok(version) => {
                                 connections.insert(config.network.clone(), stream);
@@ -432,7 +482,10 @@ fn connect_tls(host: &str, port: u16) -> Result<ElectrumConnection, String> {
     let tls_stream = StreamOwned::new(conn, tcp_stream);
     let stream = BufReader::new(tls_stream);
 
-    Ok(ElectrumConnection { stream: Arc::new(Mutex::new(stream)) })
+    Ok(ElectrumConnection {
+        stream: Arc::new(Mutex::new(stream)),
+        pending_requests: Arc::new(Mutex::new(HashMap::new())),
+    })
 }
 
 // Android JNI bindings
