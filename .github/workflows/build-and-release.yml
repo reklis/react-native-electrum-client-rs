@@ -1,0 +1,165 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  build-ios:
+    name: Build iOS Libraries
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-ios-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ios-
+
+      - name: Build iOS libraries
+        run: ./scripts/build-ios.sh
+
+      - name: Upload iOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-libraries
+          path: |
+            target/universal/release/libelectrum_client_rs.a
+            target/universal/release/libelectrum_client_rs_sim.a
+          retention-days: 1
+
+  build-android:
+    name: Build Android Libraries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26c
+          add-to-path: true
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-android-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-android-
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk || true
+
+      - name: Build Android libraries
+        run: ./scripts/build-android.sh
+
+      - name: Create Android libraries archive
+        run: |
+          cd android/src/main/jniLibs
+          tar -czf ../../../../android-jniLibs.tar.gz *
+          cd ../../../../
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-libraries
+          path: android-jniLibs.tar.gz
+          retention-days: 1
+
+  create-release:
+    name: Create Release
+    needs: [build-ios, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download iOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-libraries
+          path: ./ios-libs
+
+      - name: Download Android artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-libraries
+          path: ./android-libs
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep "^version" Cargo.toml | head -n 1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Generate release name
+        id: release_name
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          SHORT_SHA=${GITHUB_SHA::7}
+          VERSION=${{ steps.version.outputs.version }}
+          RELEASE_NAME="v${VERSION}-${BRANCH_NAME}-${SHORT_SHA}"
+          echo "name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+          echo "Release name: $RELEASE_NAME"
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_name.outputs.name }}
+          name: Release ${{ steps.release_name.outputs.name }}
+          draft: false
+          prerelease: ${{ github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/main' }}
+          generate_release_notes: true
+          files: |
+            ./ios-libs/libelectrum_client_rs.a
+            ./ios-libs/libelectrum_client_rs_sim.a
+            ./android-libs/android-jniLibs.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release Summary
+        run: |
+          echo "### Release Created Successfully! :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Release:** ${{ steps.create_release.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ steps.release_name.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "- iOS Device Library (libelectrum_client_rs.a)" >> $GITHUB_STEP_SUMMARY
+          echo "- iOS Simulator Library (libelectrum_client_rs_sim.a)" >> $GITHUB_STEP_SUMMARY
+          echo "- Android Libraries (android-jniLibs.tar.gz)" >> $GITHUB_STEP_SUMMARY

@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use serde::{Deserialize, Serialize};
@@ -57,53 +58,83 @@ impl ElectrumResponse {
     }
 }
 
+// Global request ID counter
+static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
 // Connection manager
 struct ElectrumConnection {
-    stream: BufReader<StreamOwned<ClientConnection, TcpStream>>,
+    stream: Arc<Mutex<BufReader<StreamOwned<ClientConnection, TcpStream>>>>,
 }
 
 impl ElectrumConnection {
-    fn send_request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    fn send_request(&self, method: &str, params: Value) -> Result<Value, String> {
+        // Lock the stream for the entire request-response cycle to prevent concurrent requests
+        let mut stream = self.stream.lock()
+            .map_err(|e| format!("Failed to lock stream: {}", e))?;
+
+        // Use unique request ID
+        let request_id = REQUEST_ID.fetch_add(1, Ordering::SeqCst);
+
         let request = json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
-            "id": 1
+            "id": request_id
         });
 
         let request_str = serde_json::to_string(&request)
             .map_err(|e| format!("Serialization error: {}", e))?;
 
         // Send request
-        self.stream
+        stream
             .get_mut()
             .write_all(format!("{}\n", request_str).as_bytes())
             .map_err(|e| format!("Write error: {}", e))?;
 
-        self.stream
+        stream
             .get_mut()
             .flush()
             .map_err(|e| format!("Flush error: {}", e))?;
 
         // Read response
         let mut response_str = String::new();
-        self.stream
-            .read_line(&mut response_str)
-            .map_err(|e| format!("Read error: {}", e))?;
+        let read_result = stream.read_line(&mut response_str);
 
-        let response: Value = serde_json::from_str(&response_str)
-            .map_err(|_| "Invalid response".to_string())?;
+        if let Err(e) = read_result {
+            return Err(format!("Read error: {}", e));
+        }
 
+        // Trim whitespace and validate non-empty
+        let response_str = response_str.trim();
+        if response_str.is_empty() {
+            return Err("Empty response from server".to_string());
+        }
+
+        // Parse JSON with better error message
+        let response: Value = serde_json::from_str(response_str)
+            .map_err(|e| format!("Invalid JSON response: {} (raw: {})", e,
+                if response_str.len() > 100 { &response_str[..100] } else { response_str }))?;
+
+        // Validate response ID matches request ID
+        if let Some(response_id) = response.get("id") {
+            if response_id.as_u64() != Some(request_id) {
+                return Err(format!("Response ID mismatch: expected {}, got {}", request_id, response_id));
+            }
+        }
+
+        // Check for server errors
         if let Some(error) = response.get("error") {
             if !error.is_null() {
                 return Err(format!("Server error: {}", error));
             }
         }
 
+        // Extract and return result
         response
             .get("result")
             .cloned()
-            .ok_or_else(|| "Invalid response".to_string())
+            .ok_or_else(|| format!("No result field in response (raw: {})",
+                if response_str.len() > 100 { &response_str[..100] } else { response_str }))
     }
 }
 
@@ -401,7 +432,7 @@ fn connect_tls(host: &str, port: u16) -> Result<ElectrumConnection, String> {
     let tls_stream = StreamOwned::new(conn, tcp_stream);
     let stream = BufReader::new(tls_stream);
 
-    Ok(ElectrumConnection { stream })
+    Ok(ElectrumConnection { stream: Arc::new(Mutex::new(stream)) })
 }
 
 // Android JNI bindings
