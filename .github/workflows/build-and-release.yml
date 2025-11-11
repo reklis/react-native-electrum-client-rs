@@ -2,60 +2,30 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - '**'
+    tags:
+      - 'v*.*.*'
 
 jobs:
-  build-ios:
-    name: Build iOS Libraries
+  build-and-publish:
+    name: Build and Publish to npm
     runs-on: macos-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-ios-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ios-
-
-      - name: Build iOS libraries
-        run: ./scripts/build-ios.sh
-
-      - name: Upload iOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-libraries
-          path: |
-            target/universal/release/libelectrum_client_rs.a
-            target/universal/release/libelectrum_client_rs_sim.a
-          retention-days: 1
-
-  build-android:
-    name: Build Android Libraries
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -72,94 +42,52 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-android-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-all-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-android-
+            ${{ runner.os }}-cargo-all-
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk || true
 
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build iOS libraries
+        run: npm run build:rust:ios
+
       - name: Build Android libraries
-        run: ./scripts/build-android.sh
+        run: npm run build:rust:android
 
-      - name: Create Android libraries archive
-        run: |
-          cd android/src/main/jniLibs
-          tar -czf ../../../../android-jniLibs.tar.gz *
-          cd ../../../../
+      - name: Build TypeScript
+        run: npm run build:ts
 
-      - name: Upload Android artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-libraries
-          path: android-jniLibs.tar.gz
-          retention-days: 1
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  create-release:
-    name: Create Release
-    needs: [build-ios, build-android]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download iOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ios-libraries
-          path: ./ios-libs
-
-      - name: Download Android artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: android-libraries
-          path: ./android-libs
-
-      - name: Get version from Cargo.toml
-        id: version
-        run: |
-          VERSION=$(grep "^version" Cargo.toml | head -n 1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
-
-      - name: Generate release name
-        id: release_name
-        run: |
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          SHORT_SHA=${GITHUB_SHA::7}
-          VERSION=${{ steps.version.outputs.version }}
-          RELEASE_NAME="v${VERSION}-${BRANCH_NAME}-${SHORT_SHA}"
-          echo "name=$RELEASE_NAME" >> $GITHUB_OUTPUT
-          echo "Release name: $RELEASE_NAME"
-
-      - name: Create Release
-        id: create_release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.release_name.outputs.name }}
-          name: Release ${{ steps.release_name.outputs.name }}
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
           draft: false
-          prerelease: ${{ github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/main' }}
+          prerelease: false
           generate_release_notes: true
           files: |
-            ./ios-libs/libelectrum_client_rs.a
-            ./ios-libs/libelectrum_client_rs_sim.a
-            ./android-libs/android-jniLibs.tar.gz
+            target/universal/release/libelectrum_client_rs.a
+            target/universal/release/libelectrum_client_rs_sim.a
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release Summary
         run: |
-          echo "### Release Created Successfully! :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "### Release Published Successfully! :rocket:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Release:** ${{ steps.create_release.outputs.url }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ steps.release_name.outputs.name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Package:** react-native-electrum-client-rs" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** $(node -p "require('./package.json').version")" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### Artifacts:" >> $GITHUB_STEP_SUMMARY
-          echo "- iOS Device Library (libelectrum_client_rs.a)" >> $GITHUB_STEP_SUMMARY
-          echo "- iOS Simulator Library (libelectrum_client_rs_sim.a)" >> $GITHUB_STEP_SUMMARY
-          echo "- Android Libraries (android-jniLibs.tar.gz)" >> $GITHUB_STEP_SUMMARY
+          echo "#### Published to:" >> $GITHUB_STEP_SUMMARY
+          echo "- :package: npm registry" >> $GITHUB_STEP_SUMMARY
+          echo "- :octocat: GitHub Release" >> $GITHUB_STEP_SUMMARY
