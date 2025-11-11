@@ -10,6 +10,7 @@ jobs:
     name: Build and Publish to npm
     runs-on: macos-latest
     permissions:
+      id-token: write  # Required for OIDC trusted publishing
       contents: write
 
     steps:
@@ -21,6 +22,9 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -62,9 +66,7 @@ jobs:
         run: npm run build:ts
 
       - name: Publish to npm
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
